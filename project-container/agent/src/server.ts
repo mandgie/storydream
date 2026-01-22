@@ -19,9 +19,9 @@ IMPORTANT Remotion Guidelines:
 - All animations MUST use useCurrentFrame() hook from Remotion
 - Use interpolate() and spring() for smooth animations
 - CSS transitions/animations are FORBIDDEN - they won't render correctly in Remotion
-- Use Sequence for timing multiple elements
+- Use Sequence for timing multiple elements - give each Sequence a descriptive "name" prop
 - Always clamp interpolation values with extrapolateLeft/Right: 'clamp'
-- Import from 'remotion': AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, spring, Sequence
+- Import from 'remotion': AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, spring, Sequence, Series
 `;
 
 const wss = new WebSocketServer({ port: PORT });
@@ -33,6 +33,7 @@ wss.on('connection', (ws: WebSocket) => {
 
   let currentQuery: AsyncGenerator | null = null;
   let abortController: AbortController | null = null;
+  let sessionId: string | null = null; // Track session ID for conversation continuity
 
   ws.on('message', async (data: Buffer) => {
     try {
@@ -47,27 +48,33 @@ wss.on('connection', (ws: WebSocket) => {
         abortController = new AbortController();
 
         console.log('Received prompt:', message.content);
-        console.log('Starting Claude query...');
+        console.log('Starting Claude query...', sessionId ? `(resuming session ${sessionId})` : '(new session)');
+
+        // Build query options - use resume if we have a session ID
+        const queryOptions: any = {
+          cwd: REMOTION_APP_PATH,
+          abortController,
+          // Always bypass permissions (safe since agent runs in sandboxed container)
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+        };
+
+        // Only set systemPrompt and other init options for new sessions
+        if (!sessionId) {
+          queryOptions.systemPrompt = {
+            type: 'preset',
+            preset: 'claude_code',
+            append: systemPromptAppend,
+          };
+          queryOptions.settingSources = ['project'];
+        } else {
+          // Resume existing session to maintain conversation context
+          queryOptions.resume = sessionId;
+        }
 
         currentQuery = query({
           prompt: message.content,
-          options: {
-            cwd: REMOTION_APP_PATH,
-
-            systemPrompt: {
-              type: 'preset',
-              preset: 'claude_code',
-              append: systemPromptAppend,
-            },
-
-            // Load skills from filesystem
-            settingSources: ['project'],
-
-            // Auto-accept file edits (sandboxed in container)
-            permissionMode: 'acceptEdits',
-
-            abortController,
-          },
+          options: queryOptions,
         });
 
         // Stream messages back to client
@@ -76,6 +83,13 @@ wss.on('connection', (ws: WebSocket) => {
         for await (const sdkMessage of currentQuery) {
           messageCount++;
           console.log(`Message ${messageCount}:`, sdkMessage.type, JSON.stringify(sdkMessage).substring(0, 500));
+
+          // Capture session ID from system init message for conversation continuity
+          if (sdkMessage.type === 'system' && sdkMessage.subtype === 'init' && sdkMessage.session_id) {
+            sessionId = sdkMessage.session_id;
+            console.log(`Captured session ID: ${sessionId}`);
+          }
+
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
               type: 'agent_message',
