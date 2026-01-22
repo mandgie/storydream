@@ -1,15 +1,22 @@
 import { WebSocketServer, WebSocket } from 'ws';
-import { createSession, destroySession, getSession } from './container.js';
+import { createSession, destroySession, getSession, syncSession, updateSessionAgentId } from './container.js';
+import { saveMessage, getRecentMessages } from './firestore.js';
+import { getProject, updateProject } from './projects.js';
+import type { AgentAction } from './types.js';
 
 interface ClientConnection {
   ws: WebSocket;
   sessionId: string | null;
+  projectId: string | null;
   agentWs: WebSocket | null;
   cleanupTimer: NodeJS.Timeout | null;
+  // Track current assistant response for saving
+  currentAssistantResponse: string;
+  currentActions: AgentAction[];
 }
 
 const clients = new Map<WebSocket, ClientConnection>();
-const SESSION_CLEANUP_DELAY = 30000; // 30 seconds grace period before destroying session
+const SESSION_CLEANUP_DELAY = 30000; // 30 seconds grace period
 
 export function createWebSocketServer(port: number): WebSocketServer {
   const wss = new WebSocketServer({ port });
@@ -22,8 +29,11 @@ export function createWebSocketServer(port: number): WebSocketServer {
     const client: ClientConnection = {
       ws,
       sessionId: null,
+      projectId: null,
       agentWs: null,
       cleanupTimer: null,
+      currentAssistantResponse: '',
+      currentActions: [],
     };
     clients.set(ws, client);
 
@@ -43,9 +53,9 @@ export function createWebSocketServer(port: number): WebSocketServer {
     ws.on('close', async () => {
       console.log('Frontend client disconnected');
 
-      // Schedule cleanup after grace period (allows for reconnects)
+      // Schedule cleanup after grace period
       if (client.sessionId) {
-        console.log(`Scheduling session ${client.sessionId} cleanup in ${SESSION_CLEANUP_DELAY/1000}s...`);
+        console.log(`Scheduling session ${client.sessionId} cleanup in ${SESSION_CLEANUP_DELAY / 1000}s...`);
         client.cleanupTimer = setTimeout(async () => {
           console.log(`Cleaning up session ${client.sessionId} after grace period`);
           if (client.sessionId) {
@@ -71,7 +81,7 @@ export function createWebSocketServer(port: number): WebSocketServer {
 async function handleMessage(client: ClientConnection, message: any): Promise<void> {
   switch (message.type) {
     case 'session:start':
-      await handleSessionStart(client);
+      await handleSessionStart(client, message.projectId);
       break;
 
     case 'message:send':
@@ -87,8 +97,8 @@ async function handleMessage(client: ClientConnection, message: any): Promise<vo
   }
 }
 
-async function handleSessionStart(client: ClientConnection): Promise<void> {
-  console.log('Starting new session...');
+async function handleSessionStart(client: ClientConnection, projectId?: string): Promise<void> {
+  console.log(`Starting session${projectId ? ` for project ${projectId}` : ''}...`);
 
   // Destroy existing session if any
   if (client.sessionId) {
@@ -99,11 +109,24 @@ async function handleSessionStart(client: ClientConnection): Promise<void> {
     }
   }
 
-  // Create new session
-  const session = await createSession();
+  // If projectId provided, verify it exists
+  if (projectId) {
+    const project = await getProject(projectId);
+    if (!project) {
+      sendToClient(client.ws, {
+        type: 'error',
+        message: `Project ${projectId} not found`,
+      });
+      return;
+    }
+    client.projectId = projectId;
+  }
+
+  // Create new session with project context
+  const session = await createSession(projectId);
   client.sessionId = session.id;
 
-  // Wait for container to be ready (use container name and internal port)
+  // Wait for container to be ready (use container name since both are on same Docker network)
   const agentUrl = `ws://${session.containerName}:3001`;
   await waitForPort(agentUrl, 30000);
 
@@ -112,18 +135,81 @@ async function handleSessionStart(client: ClientConnection): Promise<void> {
 
   client.agentWs.on('open', () => {
     console.log(`Connected to agent for session ${session.id}`);
+    // Session continuity is now handled via AGENT_SESSION_ID env var and SDK resume
   });
 
-  client.agentWs.on('message', (data: Buffer) => {
-    // Forward agent messages to frontend
+  client.agentWs.on('message', async (data: Buffer) => {
     const message = JSON.parse(data.toString());
+
+    // Handle session ID notification from agent (for persistence)
+    if (message.type === 'session_id' && message.sessionId && client.sessionId) {
+      console.log(`Agent reported session ID: ${message.sessionId}`);
+      await updateSessionAgentId(client.sessionId, message.sessionId);
+      return; // Don't forward this internal message to frontend
+    }
+
+    // Track assistant response content
+    if (message.type === 'agent_message') {
+      // Accumulate text content from assistant messages
+      if (message.data?.message?.content) {
+        const content = message.data.message.content;
+        if (typeof content === 'string') {
+          client.currentAssistantResponse += content;
+        } else if (Array.isArray(content)) {
+          // Handle array of content blocks
+          for (const block of content) {
+            if (block.type === 'text') {
+              client.currentAssistantResponse += block.text;
+            }
+          }
+        }
+      }
+
+      // Track tool use / actions
+      if (message.data?.message?.tool_use) {
+        const toolUse = message.data.message.tool_use;
+        client.currentActions.push({
+          type: mapToolToActionType(toolUse.name),
+          filePath: toolUse.input?.file_path || toolUse.input?.path,
+          summary: `${toolUse.name}: ${JSON.stringify(toolUse.input).substring(0, 100)}`,
+        });
+      }
+    }
+
+    // Forward agent messages to frontend
     sendToClient(client.ws, {
       type: 'agent:message',
       data: message,
     });
 
+    // When agent completes, save the assistant message and sync to storage
     if (message.type === 'complete') {
       sendToClient(client.ws, { type: 'agent:complete' });
+
+      // Save assistant response to Firestore
+      if (client.projectId && client.currentAssistantResponse) {
+        try {
+          await saveMessage(client.projectId, {
+            role: 'assistant',
+            content: client.currentAssistantResponse,
+            actions: client.currentActions.length > 0 ? client.currentActions : undefined,
+          });
+          console.log(`Saved assistant message for project ${client.projectId}`);
+        } catch (error) {
+          console.error('Failed to save assistant message:', error);
+        }
+      }
+
+      // Sync project changes to Cloud Storage (don't await - run in background)
+      if (client.sessionId) {
+        syncSession(client.sessionId).catch((err) => {
+          console.error('Background sync failed:', err);
+        });
+      }
+
+      // Reset tracking
+      client.currentAssistantResponse = '';
+      client.currentActions = [];
     }
   });
 
@@ -143,6 +229,7 @@ async function handleSessionStart(client: ClientConnection): Promise<void> {
   sendToClient(client.ws, {
     type: 'session:ready',
     sessionId: session.id,
+    projectId: client.projectId,
     previewUrl: `http://localhost:${session.previewPort}`,
   });
 }
@@ -157,6 +244,23 @@ async function handleMessageSend(client: ClientConnection, content: string): Pro
   }
 
   console.log('Forwarding message to agent:', content.substring(0, 100));
+
+  // Save user message to Firestore if we have a project
+  if (client.projectId) {
+    try {
+      await saveMessage(client.projectId, {
+        role: 'user',
+        content,
+      });
+      console.log(`Saved user message for project ${client.projectId}`);
+    } catch (error) {
+      console.error('Failed to save user message:', error);
+    }
+  }
+
+  // Reset assistant response tracking for new message
+  client.currentAssistantResponse = '';
+  client.currentActions = [];
 
   // Forward to agent
   client.agentWs.send(JSON.stringify({
@@ -176,6 +280,7 @@ async function handleSessionEnd(client: ClientConnection): Promise<void> {
     client.agentWs = null;
   }
 
+  client.projectId = null;
   sendToClient(client.ws, { type: 'session:ended' });
 }
 
@@ -201,9 +306,22 @@ async function waitForPort(url: string, timeout: number): Promise<void> {
       console.log(`${url} is ready`);
       return;
     } catch {
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 500));
     }
   }
 
   throw new Error(`Timeout waiting for ${url}`);
+}
+
+function mapToolToActionType(toolName: string): AgentAction['type'] {
+  if (toolName.toLowerCase().includes('edit') || toolName.toLowerCase().includes('write')) {
+    return 'file_edit';
+  }
+  if (toolName.toLowerCase().includes('create')) {
+    return 'file_create';
+  }
+  if (toolName.toLowerCase().includes('delete') || toolName.toLowerCase().includes('remove')) {
+    return 'file_delete';
+  }
+  return 'command_run';
 }

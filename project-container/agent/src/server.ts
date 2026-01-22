@@ -4,16 +4,23 @@ import { WebSocketServer, WebSocket } from 'ws';
 const PORT = 3001;
 const REMOTION_APP_PATH = '/app/remotion-app';
 
+// Read initial session ID from environment (for session persistence across container restarts)
+const INITIAL_SESSION_ID = process.env.AGENT_SESSION_ID || null;
+
 const wss = new WebSocketServer({ port: PORT });
 
 console.log(`Agent WebSocket server listening on port ${PORT}`);
+if (INITIAL_SESSION_ID) {
+  console.log(`Will resume agent session: ${INITIAL_SESSION_ID}`);
+}
 
 wss.on('connection', (ws: WebSocket) => {
   console.log('Client connected');
 
   let currentQuery: AsyncGenerator | null = null;
   let abortController: AbortController | null = null;
-  let sessionId: string | null = null; // Track session ID for conversation continuity
+  // Initialize with session ID from environment if available (for persistence)
+  let sessionId: string | null = INITIAL_SESSION_ID;
 
   ws.on('message', async (data: Buffer) => {
     try {
@@ -66,8 +73,21 @@ wss.on('connection', (ws: WebSocket) => {
 
           // Capture session ID from system init message for conversation continuity
           if (sdkMessage.type === 'system' && sdkMessage.subtype === 'init' && sdkMessage.session_id) {
-            sessionId = sdkMessage.session_id;
-            console.log(`Captured session ID: ${sessionId}`);
+            const newSessionId = sdkMessage.session_id;
+            // Only notify backend if this is a new session (not resuming)
+            if (newSessionId !== sessionId) {
+              sessionId = newSessionId;
+              console.log(`Captured new session ID: ${sessionId}`);
+              // Notify backend of the new session ID for persistence
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'session_id',
+                  sessionId: sessionId,
+                }));
+              }
+            } else {
+              console.log(`Resumed existing session: ${sessionId}`);
+            }
           }
 
           if (ws.readyState === WebSocket.OPEN) {
