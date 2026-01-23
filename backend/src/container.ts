@@ -14,6 +14,7 @@ const HOST_PROJECT_DATA_DIR = process.env.HOST_PROJECT_DATA_DIR || '/tmp';
 const IMAGE_NAME = 'storydream-project';
 const BASE_PREVIEW_PORT = 4100;
 const BASE_AGENT_PORT = 4200;
+const DOCKER_NETWORK = process.env.DOCKER_NETWORK || 'storydream_default';
 
 interface Session {
   id: string;
@@ -113,7 +114,7 @@ export async function createSession(projectId?: string): Promise<Session> {
         '3001/tcp': [{ HostPort: agentPort.toString() }],
       },
       AutoRemove: true,
-      NetworkMode: 'storydream_default',
+      NetworkMode: DOCKER_NETWORK,
       Binds: binds.length > 0 ? binds : undefined,
     },
     Env: [

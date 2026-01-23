@@ -1,10 +1,21 @@
-version: '3.8'
-
-# Development compose - runs backend in dev mode
-# Frontend runs separately: cd frontend && npm run dev
-# Project containers are created dynamically by the backend
+# Development compose - everything runs in Docker
+# Start with: ./start.sh or docker-compose -f docker-compose.dev.yml up --build
 
 services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   backend:
     build:
       context: ./backend
@@ -14,7 +25,6 @@ services:
       - "8081:8081"   # REST API
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./backend/src:/app/src
       # Mount GCP credentials for Firestore/Storage access
       - ~/.config/gcloud:/root/.config/gcloud:ro
       # Shared directory for project files (accessible by both backend and project containers)
@@ -26,12 +36,25 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
       - PROJECT_DATA_DIR=/project-data
       - HOST_PROJECT_DATA_DIR=${PWD}/project-data
+      # Docker networking flags
+      - RUNNING_IN_DOCKER=true
+      - DOCKER_NETWORK=storydream_default
     command: ["npm", "run", "dev"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   # Build the project container image
+  # This service doesn't run - it ensures the image exists for dynamic container creation
   project-image:
     build:
       context: ./project-container
       dockerfile: Dockerfile
     image: storydream-project
     command: ["echo", "Image built"]
+
+networks:
+  default:
+    name: storydream_default

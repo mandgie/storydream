@@ -126,8 +126,12 @@ async function handleSessionStart(client: ClientConnection, projectId?: string):
   const session = await createSession(projectId);
   client.sessionId = session.id;
 
-  // Wait for container to be ready (use container name since both are on same Docker network)
-  const agentUrl = `ws://${session.containerName}:3001`;
+  // Wait for container to be ready
+  // Use localhost with mapped port when running locally, container name when in Docker
+  const isRunningInDocker = process.env.RUNNING_IN_DOCKER === 'true';
+  const agentUrl = isRunningInDocker
+    ? `ws://${session.containerName}:3001`
+    : `ws://localhost:${session.agentPort}`;
   await waitForPort(agentUrl, 30000);
 
   // Connect to agent WebSocket

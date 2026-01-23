@@ -17,7 +17,13 @@ interface UseWebSocketReturn {
   endSession: () => void;
 }
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'ws://localhost:8080';
+// Use relative WebSocket URL - nginx proxies /ws to backend
+const getWebSocketUrl = () => {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws`;
+};
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || getWebSocketUrl();
 
 // Format error into a clear prompt for the agent
 function formatErrorReport(error: { message: string; stack?: string; componentStack?: string }): string {

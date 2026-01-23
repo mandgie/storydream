@@ -1,41 +1,27 @@
 #!/bin/bash
-
-# StoryDream Docker Start Script
-
 set -e
 
-usage() {
-    echo "Usage: ./start.sh [dev|prod]"
-    echo ""
-    echo "  dev   - Start backend in development mode (hot reload)"
-    echo "  prod  - Start full stack (frontend + backend)"
-    echo ""
-    exit 1
-}
+# StoryDream - Start Script
+# Runs entire stack in Docker
 
-if [ -z "$1" ]; then
-    usage
+echo "========================================"
+echo "  StoryDream - Starting..."
+echo "========================================"
+echo ""
+
+# Check for .env file
+if [ ! -f ".env" ]; then
+    if [ -n "$ANTHROPIC_API_KEY" ]; then
+        echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" > .env
+        echo "Created .env from environment variable"
+    else
+        echo "Error: .env file not found and ANTHROPIC_API_KEY not set"
+        echo "Create .env with: ANTHROPIC_API_KEY=your-api-key"
+        exit 1
+    fi
 fi
 
-case "$1" in
-    dev)
-        echo "Starting development environment..."
-        docker-compose -f docker-compose.dev.yml up --build -d
-        echo ""
-        echo "Backend running at http://localhost:8080"
-        echo "Run frontend separately with: cd frontend && npm run dev"
-        ;;
-    prod)
-        echo "Starting production environment..."
-        docker-compose -f docker-compose.yml up --build -d
-        echo ""
-        echo "Frontend running at http://localhost:3000"
-        echo "Backend running at http://localhost:8080"
-        ;;
-    *)
-        usage
-        ;;
-esac
-
+echo "Building and starting services..."
 echo ""
-echo "View logs with: docker-compose logs -f"
+
+docker-compose -f docker-compose.dev.yml up --build "$@"
