@@ -1,6 +1,7 @@
 version: '3.8'
 
-# Development compose - runs frontend and backend in dev mode
+# Development compose - runs backend in dev mode
+# Frontend runs separately: cd frontend && npm run dev
 # Project containers are created dynamically by the backend
 
 services:
@@ -9,12 +10,22 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      - "8080:8080"   # WebSocket
+      - "8081:8081"   # REST API
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./backend/src:/app/src
+      # Mount GCP credentials for Firestore/Storage access
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      # Shared directory for project files (accessible by both backend and project containers)
+      - ./project-data:/project-data
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GCP_PROJECT_ID=saltfish-434012
+      - STORAGE_BUCKET=storydream-data
+      - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+      - PROJECT_DATA_DIR=/project-data
+      - HOST_PROJECT_DATA_DIR=${PWD}/project-data
     command: ["npm", "run", "dev"]
 
   # Build the project container image

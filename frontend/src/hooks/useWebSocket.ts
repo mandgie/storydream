@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import type { ChatMessage } from '../types';
 
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
+interface UseWebSocketOptions {
+  projectId?: string;
+  initialMessages?: ChatMessage[];
 }
 
 interface UseWebSocketReturn {
@@ -10,7 +11,7 @@ interface UseWebSocketReturn {
   isSessionActive: boolean;
   isLoading: boolean;
   previewUrl: string | null;
-  messages: Message[];
+  messages: ChatMessage[];
   startSession: () => void;
   sendMessage: (content: string) => void;
   endSession: () => void;
@@ -18,15 +19,61 @@ interface UseWebSocketReturn {
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'ws://localhost:8080';
 
-export function useWebSocket(): UseWebSocketReturn {
+// Format error into a clear prompt for the agent
+function formatErrorReport(error: { message: string; stack?: string; componentStack?: string }): string {
+  let report = `RUNTIME ERROR in the video preview - please fix this automatically:
+
+Error: ${error.message}`;
+
+  if (error.stack) {
+    const stackLines = error.stack.split('\n').slice(0, 8).join('\n');
+    report += `
+
+Stack trace:
+${stackLines}`;
+  }
+
+  if (error.componentStack) {
+    const componentLines = error.componentStack.split('\n').slice(0, 6).join('\n');
+    report += `
+
+Component stack:
+${componentLines}`;
+  }
+
+  report += `
+
+Please read the MyVideo.tsx file, identify the bug causing this error, and fix it.`;
+
+  return report;
+}
+
+export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketReturn {
+  const { projectId, initialMessages = [] } = options;
+
   const [isConnected, setIsConnected] = useState(false);
   const [isSessionActive, setIsSessionActive] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
 
   const wsRef = useRef<WebSocket | null>(null);
   const currentAssistantMessage = useRef<string>('');
+  const lastErrorRef = useRef<string>('');
+  const errorTimeoutRef = useRef<number | null>(null);
+  const projectIdRef = useRef<string | undefined>(projectId);
+
+  // Update projectId ref when it changes
+  useEffect(() => {
+    projectIdRef.current = projectId;
+  }, [projectId]);
+
+  // Update messages when initialMessages change (project loaded)
+  useEffect(() => {
+    if (initialMessages.length > 0) {
+      setMessages(initialMessages);
+    }
+  }, [initialMessages]);
 
   useEffect(() => {
     const ws = new WebSocket(BACKEND_URL);
@@ -58,6 +105,58 @@ export function useWebSocket(): UseWebSocketReturn {
     };
   }, []);
 
+  // Listen for error messages from the preview iframe
+  useEffect(() => {
+    const handlePreviewError = (event: MessageEvent) => {
+      if (event.data?.type !== 'remotion:error') return;
+
+      const { error } = event.data;
+      const errorKey = error.message + (error.stack || '');
+
+      // Debounce: don't send the same error multiple times
+      if (lastErrorRef.current === errorKey) return;
+      lastErrorRef.current = errorKey;
+
+      if (errorTimeoutRef.current) {
+        clearTimeout(errorTimeoutRef.current);
+      }
+      errorTimeoutRef.current = window.setTimeout(() => {
+        lastErrorRef.current = '';
+      }, 5000);
+
+      if (!isSessionActive || isLoading) {
+        console.log('Preview error received but session not ready:', error.message);
+        return;
+      }
+
+      console.log('Preview error received, sending to agent:', error.message);
+
+      const errorReport = formatErrorReport(error);
+
+      setMessages((prev) => [...prev, { role: 'system', content: `Runtime error detected:\n${error.message}` }]);
+
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        setIsLoading(true);
+        currentAssistantMessage.current = '';
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'message:send',
+            content: errorReport,
+          })
+        );
+      }
+    };
+
+    window.addEventListener('message', handlePreviewError);
+
+    return () => {
+      window.removeEventListener('message', handlePreviewError);
+      if (errorTimeoutRef.current) {
+        clearTimeout(errorTimeoutRef.current);
+      }
+    };
+  }, [isSessionActive, isLoading]);
+
   const handleMessage = useCallback((message: any) => {
     switch (message.type) {
       case 'session:ready':
@@ -72,7 +171,6 @@ export function useWebSocket(): UseWebSocketReturn {
         break;
 
       case 'agent:complete':
-        // Agent finished responding
         currentAssistantMessage.current = '';
         setIsLoading(false);
         break;
@@ -90,29 +188,21 @@ export function useWebSocket(): UseWebSocketReturn {
   }, []);
 
   const handleAgentMessage = useCallback((agentMessage: any) => {
-    // The agent wraps SDK messages: { type: 'agent_message', data: sdkMessage }
     const sdkMessage = agentMessage.type === 'agent_message' ? agentMessage.data : agentMessage;
 
     console.log('Agent message received:', sdkMessage.type, sdkMessage);
 
-    // Extract text content from assistant messages
     if (sdkMessage.type === 'assistant' && sdkMessage.message?.content) {
-      // Each assistant SDK message is a new bubble - reset accumulated content
       currentAssistantMessage.current = '';
 
-      // Collect all text from this assistant message
       for (const block of sdkMessage.message.content) {
         if (block.type === 'text') {
           currentAssistantMessage.current += block.text;
         }
       }
 
-      // Only add if there's actual text content
       if (currentAssistantMessage.current) {
-        setMessages(prev => [
-          ...prev,
-          { role: 'assistant', content: currentAssistantMessage.current }
-        ]);
+        setMessages((prev) => [...prev, { role: 'assistant', content: currentAssistantMessage.current }]);
       }
     }
   }, []);
@@ -120,25 +210,39 @@ export function useWebSocket(): UseWebSocketReturn {
   const startSession = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       setIsLoading(true);
-      setMessages([]);
-      currentAssistantMessage.current = '';
-      wsRef.current.send(JSON.stringify({ type: 'session:start' }));
-    }
-  }, []);
-
-  const sendMessage = useCallback((content: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN && isSessionActive) {
-      // Add user message
-      setMessages(prev => [...prev, { role: 'user', content }]);
-      setIsLoading(true);
+      // Don't clear messages if we have initial messages (loaded from project)
+      if (initialMessages.length === 0) {
+        setMessages([]);
+      }
       currentAssistantMessage.current = '';
 
-      wsRef.current.send(JSON.stringify({
-        type: 'message:send',
-        content,
-      }));
+      // Include projectId if available
+      const payload: any = { type: 'session:start' };
+      if (projectIdRef.current) {
+        payload.projectId = projectIdRef.current;
+      }
+
+      wsRef.current.send(JSON.stringify(payload));
     }
-  }, [isSessionActive]);
+  }, [initialMessages.length]);
+
+  const sendMessage = useCallback(
+    (content: string) => {
+      if (wsRef.current?.readyState === WebSocket.OPEN && isSessionActive) {
+        setMessages((prev) => [...prev, { role: 'user', content }]);
+        setIsLoading(true);
+        currentAssistantMessage.current = '';
+
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'message:send',
+            content,
+          })
+        );
+      }
+    },
+    [isSessionActive]
+  );
 
   const endSession = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

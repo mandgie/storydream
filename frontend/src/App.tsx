@@ -1,49 +1,23 @@
-import { useWebSocket } from './hooks/useWebSocket';
-import { Landing } from './components/Landing';
-import { Chat } from './components/Chat';
-import { VideoPreview } from './components/VideoPreview';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { Dashboard } from './components/Dashboard';
+import { ProjectWorkspace } from './components/ProjectWorkspace';
 
 export function App() {
-  const {
-    isConnected,
-    isSessionActive,
-    isLoading,
-    previewUrl,
-    messages,
-    startSession,
-    sendMessage,
-  } = useWebSocket();
-
-  // Show landing page if no active session
-  if (!isSessionActive) {
-    return (
-      <Landing
-        onStart={startSession}
-        isConnected={isConnected}
-        isLoading={isLoading}
-      />
-    );
-  }
-
-  // Show main workspace with chat and preview
   return (
-    <div className="h-screen flex">
-      {/* Chat Panel - Left */}
-      <div className="w-1/2 border-r border-zinc-800">
-        <Chat
-          messages={messages}
-          isLoading={isLoading}
-          onSendMessage={sendMessage}
-        />
-      </div>
+    <BrowserRouter>
+      <Routes>
+        {/* Dashboard - list all projects */}
+        <Route path="/projects" element={<Dashboard />} />
 
-      {/* Video Preview - Right */}
-      <div className="w-1/2">
-        <VideoPreview
-          previewUrl={previewUrl}
-          isLoading={isLoading && !previewUrl}
-        />
-      </div>
-    </div>
+        {/* Project workspace - edit a specific project */}
+        <Route path="/projects/:projectId" element={<ProjectWorkspace />} />
+
+        {/* Redirect root to projects dashboard */}
+        <Route path="/" element={<Navigate to="/projects" replace />} />
+
+        {/* Catch-all redirect */}
+        <Route path="*" element={<Navigate to="/projects" replace />} />
+      </Routes>
+    </BrowserRouter>
   );
 }

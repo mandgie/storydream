@@ -1,11 +1,18 @@
 # Project container: Remotion app + Claude Agent
 FROM node:20-slim
 
-# Install dependencies for Remotion and Claude Code
+# Install dependencies for Remotion, Claude Code, and GCS access
 RUN apt-get update && apt-get install -y \
     chromium \
     curl \
     git \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Google Cloud SDK for GCS access
+RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list \
+    && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
+    && apt-get update && apt-get install -y google-cloud-cli \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI globally
@@ -30,6 +37,9 @@ COPY remotion-app/ ./remotion-app/
 # Copy start script
 COPY start.sh ./
 RUN chmod +x start.sh
+
+# Create directory for GCP credentials
+RUN mkdir -p /app/.config/gcloud
 
 # Give node user ownership of /app (required for bypassPermissions mode)
 RUN chown -R node:node /app

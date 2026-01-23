@@ -3,7 +3,7 @@ import { Player, PlayerRef } from '@remotion/player';
 import { MyVideo } from './compositions/MyVideo';
 import { Timeline } from './components/Timeline';
 
-const DURATION_IN_FRAMES = 150;
+const DURATION_IN_FRAMES = 360;
 const FPS = 30;
 
 // Post error to parent window (frontend) for auto-fixing

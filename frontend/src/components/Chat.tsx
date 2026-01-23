@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 
 interface Message {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
 }
 
@@ -28,11 +28,18 @@ export function Chat({ messages, isLoading, onSendMessage }: ChatProps) {
   };
 
   return (
-    <div className="flex flex-col h-full bg-zinc-900">
+    <div
+      className="flex flex-col h-full"
+      style={{
+        background: 'var(--glass-bg)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+      }}
+    >
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && (
-          <div className="text-zinc-500 text-center py-8">
+          <div className="text-center py-8" style={{ color: 'var(--text-muted)' }}>
             Describe the video you want to create...
           </div>
         )}
@@ -40,14 +47,31 @@ export function Chat({ messages, isLoading, onSendMessage }: ChatProps) {
         {messages.map((message, index) => (
           <div
             key={index}
-            className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            className={`flex ${
+              message.role === 'user'
+                ? 'justify-end'
+                : message.role === 'system'
+                ? 'justify-center'
+                : 'justify-start'
+            }`}
           >
             <div
-              className={`max-w-[80%] rounded-lg px-4 py-2 ${
+              className={`rounded-xl px-4 py-2 ${
+                message.role === 'system'
+                  ? 'max-w-[90%] text-amber-200 border border-amber-700/50'
+                  : 'max-w-[80%]'
+              } ${
                 message.role === 'user'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-zinc-800 text-zinc-100'
+                  ? 'text-white'
+                  : 'text-zinc-100'
               }`}
+              style={{
+                background: message.role === 'user'
+                  ? 'var(--accent-warm)'
+                  : message.role === 'system'
+                  ? 'rgba(120, 80, 20, 0.3)'
+                  : 'rgba(40, 35, 32, 0.8)'
+              }}
             >
               <pre className="whitespace-pre-wrap font-sans text-sm">
                 {message.content}
@@ -58,7 +82,7 @@ export function Chat({ messages, isLoading, onSendMessage }: ChatProps) {
 
         {isLoading && messages[messages.length - 1]?.role !== 'assistant' && (
           <div className="flex justify-start">
-            <div className="bg-zinc-800 rounded-lg px-4 py-2 text-zinc-400">
+            <div className="rounded-xl px-4 py-2" style={{ background: 'rgba(40, 35, 32, 0.8)', color: 'var(--text-secondary)' }}>
               <div className="flex items-center gap-2">
                 <div className="animate-pulse">Thinking...</div>
               </div>
@@ -70,7 +94,7 @@ export function Chat({ messages, isLoading, onSendMessage }: ChatProps) {
       </div>
 
       {/* Input */}
-      <form onSubmit={handleSubmit} className="p-4 border-t border-zinc-800">
+      <form onSubmit={handleSubmit} className="p-4 border-t" style={{ borderColor: 'var(--glass-border)' }}>
         <div className="flex gap-2">
           <input
             type="text"
@@ -78,12 +102,19 @@ export function Chat({ messages, isLoading, onSendMessage }: ChatProps) {
             onChange={(e) => setInput(e.target.value)}
             placeholder="Describe your video changes..."
             disabled={isLoading}
-            className="flex-1 bg-zinc-800 text-white rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+            className="flex-1 text-white rounded-xl px-4 py-2 outline-none disabled:opacity-50 transition-all"
+            style={{
+              background: 'rgba(40, 35, 32, 0.8)',
+              border: '1px solid var(--glass-border)',
+            }}
           />
           <button
             type="submit"
             disabled={!input.trim() || isLoading}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+            className="disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-xl transition-colors"
+            style={{
+              background: !input.trim() || isLoading ? 'rgba(40, 35, 32, 0.8)' : 'var(--accent-warm)',
+            }}
           >
             Send
           </button>
